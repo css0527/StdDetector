@@ -1,0 +1,58 @@
+# 敌方颜色
+enemy_color: "red"
+
+# ROI区域
+use_roi: false
+roi:
+  x: 420
+  y: 50
+  width: 600
+  height: 600
+
+# 传统方法参数
+threshold: 150
+max_angle_error: 45 # degree
+min_lightbar_ratio: 1.5
+max_lightbar_ratio: 20
+min_lightbar_length: 8
+min_armor_ratio: 1
+max_armor_ratio: 5
+max_side_ratio: 1.5
+max_rectangular_error: 25 # degree
+min_confidence: 0.8
+
+# 相机参数
+camera_name: "hikrobot"
+exposure_ms: 2
+gain: 16
+vid_pid: "MV-CS016-10UC"
+# 重投影误差: 0.1143px
+camera_matrix: [1805.5840363296295, 0, 710.34226967429754, 0, 1805.674155969999, 553.14802224830373, 0, 0, 1]
+distort_coeffs: [-0.075632678207842807, 0.085774463005285684, -0.00032576760334061751, 0.00010117163734014234, 0]
+
+# 相机同理想情况的偏角: yaw0.46 pitch0.61 roll-1.53 degree
+R_camera2gimbal: [-0.0083195760046954614, 0.010498791137270739, 0.99991027599468041, -0.99960756138647755, -0.026835747568381807, -0.0080352891314148939, 0.026748978935305992, -0.99958472279097077, 0.010717933047771133]
+t_camera2gimbal: [0.094969301833534511, 0.095006290298006682, 0.050987066291756609]
+
+# 装甲板物理尺寸 (单位:米)
+armor_width: 0.135
+lightbar_length: 0.056
+
+# ----- 卡尔曼滤波参数 -----
+kalman_filter:
+  Q_pos: 0.5
+  Q_vel: 0.5
+  R_meas: 0.05
+
+# ----- 通讯延迟参数 (场景2) -----
+communication:
+  default_delay_ms: 5.0
+  compensation_strategy: 0
+  enable_compensation: true
+
+# ----- 视频/相机切换 -----
+video:
+  use_camera: false
+  video_path: "/home/c/AutoAim/StdDetector/video/8radps.avi"
+  camera_index: 0
+  
