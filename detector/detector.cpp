@@ -18,7 +18,7 @@ std::list<Armor> Detector::detect(const cv::Mat & bgr_img)
   cv::cvtColor(bgr_img, gray_img, cv::COLOR_BGR2GRAY);
 
   // 进行二值化
-  binary_img = gray_img.clone();  // 保存灰度图供 PCA 使用
+  binary_img = gray_img.clone();
   cv::Mat binary_img;
   cv::threshold(gray_img, binary_img, 120, 255, cv::THRESH_BINARY);
 
@@ -53,64 +53,69 @@ std::list<Armor> Detector::detect(const cv::Mat & bgr_img)
       auto armor = Armor(*left, *right);
       if (!check_geometry(armor)) continue;
 
-      armor.pattern = get_pattern(bgr_img, armor);
-
-      classify(armor);
+      // 使用新的分类器提取数字
+      if (classifier) {
+        armor.number_img = classifier->extractNumber(bgr_img, armor);
+        classifier->classify(armor);
+      } else {
+        // 回退到旧方法
+        armor.pattern = get_pattern(bgr_img, armor);
+        classify(armor);
+      }
+      
       if (!check_name(armor)) continue;
 
       armors.emplace_back(armor);
     }
   }
 
-  // PCA 角点矫正 - 在所有装甲板检测完成后执行
+  // 使用分类器过滤
+  if (classifier && !armors.empty()) {
+    classifier->eraseIgnoreClasses(armors);
+  }
+
+  // PCA 角点矫正
   if (!armors.empty()) {
-      if (corner_corrector_ == nullptr) {
-        corner_corrector_ = std::make_unique<LightCornerCorrector>();
-      }
-      
-      if (use_pca_ && corner_corrector_) {
-        for (auto& armor : armors) {
-          // 保存原始角点
-          auto left_top_orig = armor.left.top;
-          auto left_bottom_orig = armor.left.bottom;
-          auto right_top_orig = armor.right.top;
-          auto right_bottom_orig = armor.right.bottom;
-          
-          corner_corrector_->correctCorners(armor, gray_img);
-          
-          // 验证矫正后的角点是否合理
-          // 检查装甲板的四个角点是否构成合理的四边形
-          std::vector<cv::Point2f> new_points = {
-              armor.left.top, armor.right.top, 
-              armor.right.bottom, armor.left.bottom
-          };
-          
-          // 计算新的宽高比
-          float top_width = cv::norm(armor.left.top - armor.right.top);
-          float bottom_width = cv::norm(armor.left.bottom - armor.right.bottom);
-          float left_height = cv::norm(armor.left.top - armor.left.bottom);
-          float right_height = cv::norm(armor.right.top - armor.right.bottom);
-          
-          float avg_width = (top_width + bottom_width) / 2;
-          float avg_height = (left_height + right_height) / 2;
-          float ratio = avg_width / std::max(avg_height, 1.0f);
-          
-          // 如果矫正后的形状不合理，恢复原始角点
-          if (ratio < 0.5 || ratio > 8.0 || avg_height < 5.0f || avg_width < 5.0f) {
-              armor.left.top = left_top_orig;
-              armor.left.bottom = left_bottom_orig;
-              armor.right.top = right_top_orig;
-              armor.right.bottom = right_bottom_orig;
-          }
-          
-          // 更新装甲板的角点
-          armor.points.clear();
-          armor.points.emplace_back(armor.left.top);
-          armor.points.emplace_back(armor.right.top);
-          armor.points.emplace_back(armor.right.bottom);
-          armor.points.emplace_back(armor.left.bottom);
+    if (corner_corrector_ == nullptr) {
+      corner_corrector_ = std::make_unique<LightCornerCorrector>();
+    }
+    
+    if (use_pca_ && corner_corrector_) {
+      for (auto& armor : armors) {
+        // 保存原始角点用于回退
+        auto left_top_orig = armor.left.top;
+        auto left_bottom_orig = armor.left.bottom;
+        auto right_top_orig = armor.right.top;
+        auto right_bottom_orig = armor.right.bottom;
+        
+        corner_corrector_->correctCorners(armor, gray_img);
+        
+        // 验证矫正结果
+        float top_width = cv::norm(armor.left.top - armor.right.top);
+        float bottom_width = cv::norm(armor.left.bottom - armor.right.bottom);
+        float left_height = cv::norm(armor.left.top - armor.left.bottom);
+        float right_height = cv::norm(armor.right.top - armor.right.bottom);
+        
+        float avg_width = (top_width + bottom_width) / 2;
+        float avg_height = (left_height + right_height) / 2;
+        float ratio = avg_width / std::max(avg_height, 1.0f);
+        
+        // 如果矫正后形状不合理，恢复原角点
+        if (ratio < 0.5 || ratio > 8.0 || avg_height < 5.0f || avg_width < 5.0f) {
+          armor.left.top = left_top_orig;
+          armor.left.bottom = left_bottom_orig;
+          armor.right.top = right_top_orig;
+          armor.right.bottom = right_bottom_orig;
         }
+        
+        // 更新装甲板的角点
+        armor.points.clear();
+        armor.points.emplace_back(armor.left.top);
+        armor.points.emplace_back(armor.right.top);
+        armor.points.emplace_back(armor.right.bottom);
+        armor.points.emplace_back(armor.left.bottom);
       }
+    }
   }
 
   return armors;

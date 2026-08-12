@@ -94,6 +94,7 @@ struct Armor
   ArmorName name;
   ArmorPriority priority;
   cv::Mat pattern;
+  cv::Mat number_img;      // 添加这行：数字分类用的图像
   double confidence;
   bool duplicated;
 

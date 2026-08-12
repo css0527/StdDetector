@@ -31,6 +31,7 @@ set(SOURCES
     main.cpp
     detector/detector.cpp
     detector/light_corner_corrector.cpp
+    detector/number_classifier.cpp
     detector/pnp_optimizer.cpp
     predict/kalman_filter.cpp
     tools/img_tools.cpp

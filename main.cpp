@@ -67,8 +67,24 @@ int main() {
     bool use_camera = tools::read<bool>(video_yaml, "use_camera");
     std::string video_path = tools::read<std::string>(video_yaml, "video_path");
     
-    // 初始化检测器
+        // 初始化检测器
     Detector detector;
+    
+    // 初始化数字分类器
+    std::string model_path = "/home/c/AutoAim/StdDetector/model/lenet.onnx";
+    std::string label_path = "/home/c/AutoAim/StdDetector/model/label.txt";
+    double classify_threshold = 0.7;
+    std::vector<std::string> ignore_classes = {"negative"};
+    
+    try {
+        detector.classifier = std::make_unique<auto_aim::NumberClassifier>(
+            model_path, label_path, classify_threshold, ignore_classes);
+        tools::logger()->info("Number classifier initialized with LeNet");
+    } catch (const std::exception & e) {
+        tools::logger()->error("Failed to init classifier: {}", e.what());
+        tools::logger()->warn("Falling back to tiny_resnet classification");
+    }
+
     
     // 初始化卡尔曼滤波器
     predict::KalmanFilter kf_yaw;

@@ -8,6 +8,7 @@
 #include "../include/armor.hpp"
 #include "light_corner_corrector.hpp"
 #include "pnp_optimizer.hpp"
+#include "number_classifier.hpp"  // 添加这行
 
 namespace auto_aim
 {
@@ -17,21 +18,15 @@ public:
   Detector();
   
   std::list<Armor> detect(const cv::Mat & bgr_img);
-  // 调试：获取 PCA 矫正前的原始角点
-  std::vector<cv::Point2f> debug_original_corners;
-  std::vector<cv::Point2f> debug_corrected_corners;
-
-  // 获取二值化图像（调试用）
+  
   cv::Mat binary_img;
   
-  // 设置是否使用 PCA 矫正
   void setUsePca(bool use) { use_pca_ = use; }
-  
-  // 设置是否使用 PnP 优化
   void setUsePnpOptimize(bool use) { use_pnp_optimize_ = use; }
-
-  // 获取优化后的 yaw
   double getOptimizedYaw() const { return optimized_yaw_; }
+  
+  // 添加分类器
+  std::unique_ptr<NumberClassifier> classifier;
 
 private:
   bool check_geometry(const Lightbar & lightbar);
