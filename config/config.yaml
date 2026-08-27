@@ -25,7 +25,7 @@ min_confidence: 0.8
 camera_name: "hikrobot"
 exposure_ms: 2
 gain: 16
-vid_pid: "MV-CS016-10UC"
+vid_pid: "2bdf:0001"  # 正确格式
 # 重投影误差: 0.1143px
 camera_matrix: [1805.5840363296295, 0, 710.34226967429754, 0, 1805.674155969999, 553.14802224830373, 0, 0, 1]
 distort_coeffs: [-0.075632678207842807, 0.085774463005285684, -0.00032576760334061751, 0.00010117163734014234, 0]
@@ -52,7 +52,7 @@ communication:
 
 # ----- 视频/相机切换 -----
 video:
-  use_camera: false
+  use_camera: true
   video_path: "/home/c/AutoAim/StdDetector/video/8radps.avi"
   camera_index: 0
   

@@ -1,216 +1,239 @@
 #include "detector.hpp"
-#include "light_corner_corrector.hpp"
-#include "pnp_optimizer.hpp"
 
 #include <fmt/format.h>
 
+#include <algorithm>
+#include <execution>
+
 #include "tools/img_tools.hpp"
-using namespace std;
-using namespace cv;
+#include "tools/logger.hpp"
 
 namespace auto_aim
 {
-Detector::Detector() {}
+
+Detector::Detector(const DetectorParams & params) : params_(params)
+{
+  // 初始化分类器
+  try {
+    std::string model_path = "/home/scurm/StdDetector/model/lenet.onnx";
+    std::string label_path = "/home/scurm/StdDetector/model/label.txt";
+
+    classifier_ = std::make_unique<NumberClassifier>(
+      model_path, label_path, params_.classifier_threshold, params_.ignore_classes);
+    tools::logger()->info("Number classifier initialized");
+  } catch (const std::exception & e) {
+    tools::logger()->error("Failed to init classifier: {}", e.what());
+  }
+
+  // 初始化角点矫正器
+  if (params_.use_pca) {
+    corner_corrector_ = std::make_unique<LightCornerCorrector>();
+  }
+}
+
 std::list<Armor> Detector::detect(const cv::Mat & bgr_img)
 {
-  // 彩色图转灰度图
-  cv::Mat gray_img;
-  cv::cvtColor(bgr_img, gray_img, cv::COLOR_BGR2GRAY);
+  // 1. 预处理
+  binary_img_ = preprocessImage(bgr_img);
 
-  // 进行二值化
-  binary_img = gray_img.clone();
+  // 2. 检测灯条
+  lights_ = findLights(bgr_img, binary_img_);
+
+  // 3. 匹配装甲板
+  armors_ = matchLights(lights_);
+
+  // 4. 分类识别数字
+  if (!armors_.empty() && classifier_) {
+    for (auto & armor : armors_) {
+      armor.number_img = classifier_->extractNumber(bgr_img, armor);
+      classifier_->classify(armor);
+    }
+
+    // 将 vector 转为 list 进行过滤
+    std::list<Armor> armor_list(armors_.begin(), armors_.end());
+    classifier_->eraseIgnoreClasses(armor_list);
+    armors_.assign(armor_list.begin(), armor_list.end());
+  }
+
+  // 5. PCA 角点矫正
+  if (params_.use_pca && corner_corrector_ && !armors_.empty()) {
+    for (auto & armor : armors_) {
+      auto left_top = armor.left.top;
+      auto left_bottom = armor.left.bottom;
+      auto right_top = armor.right.top;
+      auto right_bottom = armor.right.bottom;
+
+      corner_corrector_->correctCorners(armor, gray_img_);
+
+      float top_width = cv::norm(armor.left.top - armor.right.top);
+      float bottom_width = cv::norm(armor.left.bottom - armor.right.bottom);
+      float left_height = cv::norm(armor.left.top - armor.left.bottom);
+      float right_height = cv::norm(armor.right.top - armor.right.bottom);
+
+      float avg_width = (top_width + bottom_width) / 2;
+      float avg_height = (left_height + right_height) / 2;
+      float ratio = avg_width / std::max(avg_height, 1.0f);
+
+      if (ratio < 0.5 || ratio > 8.0 || avg_height < 5.0f || avg_width < 5.0f) {
+        armor.left.top = left_top;
+        armor.left.bottom = left_bottom;
+        armor.right.top = right_top;
+        armor.right.bottom = right_bottom;
+      }
+
+      armor.points.clear();
+      armor.points = {armor.left.top, armor.right.top, armor.right.bottom, armor.left.bottom};
+    }
+  }
+
+  return std::list<Armor>(armors_.begin(), armors_.end());
+}
+
+cv::Mat Detector::preprocessImage(const cv::Mat & rgb_img)
+{
+  cv::cvtColor(rgb_img, gray_img_, cv::COLOR_BGR2GRAY);
+
   cv::Mat binary_img;
-  cv::threshold(gray_img, binary_img, 120, 255, cv::THRESH_BINARY);
+  cv::threshold(gray_img_, binary_img, params_.binary_thres, 255, cv::THRESH_BINARY);
 
-  // 获取轮廓点
+  return binary_img;
+}
+
+std::vector<Lightbar> Detector::findLights(const cv::Mat & rgb_img, const cv::Mat & binary_img)
+{
   std::vector<std::vector<cv::Point>> contours;
-  cv::findContours(binary_img, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_NONE);
+  std::vector<cv::Vec4i> hierarchy;
+  cv::findContours(binary_img, contours, hierarchy, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_NONE);
 
-  // 获取灯条
-  std::size_t lightbar_id = 0;
-  std::list<Lightbar> lightbars;
+  std::vector<Lightbar> lights;
+  size_t id = 0;
+
   for (const auto & contour : contours) {
+    if (contour.size() < 6) continue;
+
     auto rotated_rect = cv::minAreaRect(contour);
-    auto lightbar = Lightbar(rotated_rect, lightbar_id);
+    Lightbar light(rotated_rect, id++);
 
-    if (!check_geometry(lightbar)) continue;
+    if (!isLight(light)) continue;
 
-    lightbar.color = get_color(bgr_img, contour);
-    lightbars.emplace_back(lightbar);
-    lightbar_id += 1;
+    int sum_r = 0, sum_b = 0;
+    for (const auto & pt : contour) {
+      sum_r += rgb_img.at<cv::Vec3b>(pt.y, pt.x)[2];
+      sum_b += rgb_img.at<cv::Vec3b>(pt.y, pt.x)[0];
+    }
+
+    if (
+      std::abs(sum_r - sum_b) / static_cast<int>(contour.size()) >
+      params_.light_params.color_diff_thresh) {
+      light.color = (sum_r > sum_b) ? Color::red : Color::blue;
+    }
+
+    lights.emplace_back(light);
   }
 
-  // 将灯条从左到右排序
-  lightbars.sort([](const Lightbar & a, const Lightbar & b) { return a.center.x < b.center.x; });
+  std::sort(lights.begin(), lights.end(), [](const Lightbar & a, const Lightbar & b) {
+    return a.center.x < b.center.x;
+  });
 
-  // 获取装甲板
-  std::list<Armor> armors;
+  return lights;
+}
 
-  for (auto left = lightbars.begin(); left != lightbars.end(); left++) {
-    for (auto right = std::next(left); right != lightbars.end(); right++) {
-      if (left->color != right->color) continue;
+bool Detector::isLight(const Lightbar & light) const
+{
+  float ratio = light.width / light.length;
+  bool ratio_ok = params_.light_params.min_ratio < ratio && ratio < params_.light_params.max_ratio;
+  bool angle_ok = light.angle_error * 57.3 < params_.light_params.max_angle;
+  return ratio_ok && angle_ok;
+}
 
-      auto armor = Armor(*left, *right);
-      if (!check_geometry(armor)) continue;
+Color Detector::getColor(const cv::Mat & bgr_img, const std::vector<cv::Point> & contour) const
+{
+  int sum_r = 0, sum_b = 0;
+  for (const auto & pt : contour) {
+    sum_r += bgr_img.at<cv::Vec3b>(pt.y, pt.x)[2];
+    sum_b += bgr_img.at<cv::Vec3b>(pt.y, pt.x)[0];
+  }
+  return (sum_b > sum_r) ? Color::blue : Color::red;
+}
 
-      // 使用新的分类器提取数字
-      if (classifier) {
-        armor.number_img = classifier->extractNumber(bgr_img, armor);
-        classifier->classify(armor);
-      } else {
-        // 回退到旧方法
-        armor.pattern = get_pattern(bgr_img, armor);
-        classify(armor);
-      }
-      
-      if (!check_name(armor)) continue;
+std::vector<Armor> Detector::matchLights(const std::vector<Lightbar> & lights)
+{
+  std::vector<Armor> armors;
 
+  for (size_t i = 0; i < lights.size(); i++) {
+    if (lights[i].color != enemy_color_) continue;
+
+    for (size_t j = i + 1; j < lights.size(); j++) {
+      if (lights[j].color != enemy_color_) continue;
+
+      if (containLight(i, j, lights)) continue;
+
+      auto type = judgeArmorType(lights[i], lights[j]);
+      if (type == ArmorType::INVALID) continue;
+
+      Armor armor(lights[i], lights[j]);
+      armor.type = type;
       armors.emplace_back(armor);
-    }
-  }
-
-  // 使用分类器过滤
-  if (classifier && !armors.empty()) {
-    classifier->eraseIgnoreClasses(armors);
-  }
-
-  // PCA 角点矫正
-  if (!armors.empty()) {
-    if (corner_corrector_ == nullptr) {
-      corner_corrector_ = std::make_unique<LightCornerCorrector>();
-    }
-    
-    if (use_pca_ && corner_corrector_) {
-      for (auto& armor : armors) {
-        // 保存原始角点用于回退
-        auto left_top_orig = armor.left.top;
-        auto left_bottom_orig = armor.left.bottom;
-        auto right_top_orig = armor.right.top;
-        auto right_bottom_orig = armor.right.bottom;
-        
-        corner_corrector_->correctCorners(armor, gray_img);
-        
-        // 验证矫正结果
-        float top_width = cv::norm(armor.left.top - armor.right.top);
-        float bottom_width = cv::norm(armor.left.bottom - armor.right.bottom);
-        float left_height = cv::norm(armor.left.top - armor.left.bottom);
-        float right_height = cv::norm(armor.right.top - armor.right.bottom);
-        
-        float avg_width = (top_width + bottom_width) / 2;
-        float avg_height = (left_height + right_height) / 2;
-        float ratio = avg_width / std::max(avg_height, 1.0f);
-        
-        // 如果矫正后形状不合理，恢复原角点
-        if (ratio < 0.5 || ratio > 8.0 || avg_height < 5.0f || avg_width < 5.0f) {
-          armor.left.top = left_top_orig;
-          armor.left.bottom = left_bottom_orig;
-          armor.right.top = right_top_orig;
-          armor.right.bottom = right_bottom_orig;
-        }
-        
-        // 更新装甲板的角点
-        armor.points.clear();
-        armor.points.emplace_back(armor.left.top);
-        armor.points.emplace_back(armor.right.top);
-        armor.points.emplace_back(armor.right.bottom);
-        armor.points.emplace_back(armor.left.bottom);
-      }
     }
   }
 
   return armors;
 }
 
-bool Detector::check_geometry(const Lightbar & lightbar)
+bool Detector::containLight(int i, int j, const std::vector<Lightbar> & lights) const
 {
-  auto angle_ok = (lightbar.angle_error * 57.3) < 45;  //degree
-  auto ratio_ok = lightbar.ratio > 1.5 && lightbar.ratio < 20;
-  auto length_ok = lightbar.length > 8;
-  return angle_ok && ratio_ok && length_ok;
+  const auto & light1 = lights[i];
+  const auto & light2 = lights[j];
+
+  std::vector<cv::Point2f> points = {light1.top, light1.bottom, light2.top, light2.bottom};
+  auto bounding_rect = cv::boundingRect(points);
+
+  double avg_length = (light1.length + light2.length) / 2.0;
+  double avg_width = (light1.width + light2.width) / 2.0;
+
+  for (int k = i + 1; k < j; k++) {
+    const auto & test_light = lights[k];
+
+    if (test_light.width > 2 * avg_width) continue;
+    if (test_light.length < 0.5 * avg_length) continue;
+
+    if (
+      bounding_rect.contains(test_light.top) || bounding_rect.contains(test_light.bottom) ||
+      bounding_rect.contains(test_light.center)) {
+      return true;
+    }
+  }
+  return false;
 }
 
-bool Detector::check_geometry(const Armor & armor)
+ArmorType Detector::judgeArmorType(const Lightbar & light1, const Lightbar & light2) const
 {
-  auto ratio_ok = armor.ratio > 1 && armor.ratio < 5;
-  auto side_ratio_ok = armor.side_ratio < 1.5;
-  auto rectangular_error_ok = (armor.rectangular_error * 57.3) < 25;
-  return ratio_ok && side_ratio_ok && rectangular_error_ok;
-}
-
-bool Detector::check_name(const Armor & armor)
-{
-  auto name_ok = armor.name != ArmorName::not_armor;
-  auto confidence_ok = armor.confidence > 0.8;
-
-  return name_ok && confidence_ok;
-}
-
-Color Detector::get_color(const cv::Mat & bgr_img, const std::vector<cv::Point> & contour)
-{
-  int red_sum = 0, blue_sum = 0;
-
-  for (const auto & point : contour) {
-    red_sum += bgr_img.at<cv::Vec3b>(point)[2];
-    blue_sum += bgr_img.at<cv::Vec3b>(point)[0];
+  float length_ratio =
+    light1.length < light2.length ? light1.length / light2.length : light2.length / light1.length;
+  if (length_ratio < params_.armor_params.min_light_ratio) {
+    return ArmorType::INVALID;
   }
 
-  return blue_sum > red_sum ? Color::blue : Color::red;
-}
+  float avg_length = (light1.length + light2.length) / 2;
+  float center_dist = cv::norm(light1.center - light2.center) / avg_length;
 
-cv::Mat Detector::get_pattern(const cv::Mat & bgr_img, const Armor & armor)
-{
-  // 延长灯条获得装甲板角点
-  // 1.125 = 0.5 * armor_height / lightbar_length = 0.5 * 126mm / 56mm
-  auto tl = armor.left.center - armor.left.top2bottom * 1.125;
-  auto bl = armor.left.center + armor.left.top2bottom * 1.125;
-  auto tr = armor.right.center - armor.right.top2bottom * 1.125;
-  auto br = armor.right.center + armor.right.top2bottom * 1.125;
+  bool is_small =
+    (params_.armor_params.min_small_center_distance <= center_dist &&
+     center_dist < params_.armor_params.max_small_center_distance);
+  bool is_large =
+    (params_.armor_params.min_large_center_distance <= center_dist &&
+     center_dist < params_.armor_params.max_large_center_distance);
 
-  auto roi_left = std::max<int>(std::min(tl.x, bl.x), 0);
-  auto roi_top = std::max<int>(std::min(tl.y, tr.y), 0);
-  auto roi_right = std::min<int>(std::max(tr.x, br.x), bgr_img.cols);
-  auto roi_bottom = std::min<int>(std::max(bl.y, br.y), bgr_img.rows);
-  auto roi_tl = cv::Point(roi_left, roi_top);
-  auto roi_br = cv::Point(roi_right, roi_bottom);
-  auto roi = cv::Rect(roi_tl, roi_br);
+  cv::Point2f diff = light1.center - light2.center;
+  float angle = std::abs(std::atan2(diff.y, diff.x)) * 180.0 / CV_PI;
+  if (angle > params_.armor_params.max_angle) {
+    return ArmorType::INVALID;
+  }
 
-  return bgr_img(roi);
-}
+  if (is_large) return ArmorType::LARGE;
+  if (is_small) return ArmorType::SMALL;
 
-void Detector::classify(Armor & armor)
-{
-  cv::dnn::Net net = cv::dnn::readNetFromONNX("/home/c/AutoAim/StdDetector/tiny_resnet.onnx");
-  cv::Mat gray;
-  cv::cvtColor(armor.pattern, gray, cv::COLOR_BGR2GRAY);
-
-  auto input = cv::Mat(32, 32, CV_8UC1, cv::Scalar(0));
-  auto x_scale = static_cast<double>(32) / gray.cols;
-  auto y_scale = static_cast<double>(32) / gray.rows;
-  auto scale = std::min(x_scale, y_scale);
-  auto h = static_cast<int>(gray.rows * scale);
-  auto w = static_cast<int>(gray.cols * scale);
-  auto roi = cv::Rect(0, 0, w, h);
-  cv::resize(gray, input(roi), {w, h});
-
-  auto blob = cv::dnn::blobFromImage(input, 1.0 / 255.0, cv::Size(), cv::Scalar());
-
-  net.setInput(blob);
-  cv::Mat outputs = net.forward();
-
-  // softmax
-  float max = *std::max_element(outputs.begin<float>(), outputs.end<float>());
-  cv::exp(outputs - max, outputs);
-  float sum = cv::sum(outputs)[0];
-  outputs /= sum;
-
-  double confidence;
-  cv::Point label_point;
-  cv::minMaxLoc(outputs.reshape(1, 1), nullptr, &confidence, nullptr, &label_point);
-  int label_id = label_point.x;
-
-  armor.confidence = confidence;
-  if (confidence > 0.5 && confidence < 0.8) std::cout << confidence << std::endl;
-  armor.name = static_cast<ArmorName>(label_id);
+  return ArmorType::INVALID;
 }
 
 }  // namespace auto_aim

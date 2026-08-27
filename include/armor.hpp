@@ -17,10 +17,11 @@ const std::vector<std::string> COLORS = {"red", "blue", "purple"};
 
 enum ArmorType
 {
-  big,
-  small
+  INVALID,
+  SMALL,
+  LARGE
 };
-const std::vector<std::string> ARMOR_TYPES = {"big", "small"};
+const std::vector<std::string> ARMOR_TYPES = {"invalid", "small", "large"};
 
 enum ArmorName
 {
@@ -52,10 +53,13 @@ struct Lightbar
   Color color;
   cv::Point2f center, top, bottom, top2bottom;
   std::vector<cv::Point2f> points;
-  double angle, angle_error, length, ratio;
+  double angle, angle_error, length, ratio, width;
 
-  Lightbar(const cv::RotatedRect & rotated_rect, std::size_t id)
+  Lightbar() : id(0), color(Color::red), angle(0), angle_error(0), length(0), ratio(0), width(0) {}
+
+  Lightbar(const cv::RotatedRect & rotated_rect, std::size_t id_)
   {
+    id = id_;
     std::vector<cv::Point2f> corners(4);
     rotated_rect.points(&corners[0]);
     std::sort(corners.begin(), corners.end(), [](const cv::Point2f & a, const cv::Point2f & b) {
@@ -70,7 +74,7 @@ struct Lightbar
     points.emplace_back(top);
     points.emplace_back(bottom);
 
-    auto width = cv::norm(corners[0] - corners[1]);
+    width = cv::norm(corners[0] - corners[1]);
     angle = std::atan2(top2bottom.y, top2bottom.x);
     angle_error = std::abs(angle - CV_PI / 2);
     length = cv::norm(top2bottom);
@@ -82,25 +86,36 @@ struct Armor
 {
   Color color;
   Lightbar left, right;
-  cv::Point2f center;       // 不是对角线交点，不能作为实际中心！
-  cv::Point2f center_norm;  // 归一化坐标
+  cv::Point2f center;
+  cv::Point2f center_norm;
   std::vector<cv::Point2f> points;
 
-  double ratio;              // 两灯条的中点连线与长灯条的长度之比
-  double side_ratio;         // 长灯条与短灯条的长度之比
-  double rectangular_error;  // 灯条和中点连线所成夹角与π/2的差值
+  double ratio;
+  double side_ratio;
+  double rectangular_error;
 
   ArmorType type;
   ArmorName name;
   ArmorPriority priority;
   cv::Mat pattern;
-  cv::Mat number_img;      // 添加这行：数字分类用的图像
+  cv::Mat number_img;
   double confidence;
   bool duplicated;
 
-  double yaw_raw;  // rad
+  double yaw_raw;
 
-  Armor(const Lightbar & left, const Lightbar & right) : left(left), right(right)
+  Armor()
+  : color(Color::red),
+    type(ArmorType::INVALID),
+    name(ArmorName::not_armor),
+    priority(ArmorPriority::first),
+    confidence(0),
+    duplicated(false),
+    yaw_raw(0)
+  {
+  }
+
+  Armor(const Lightbar & left_, const Lightbar & right_) : left(left_), right(right_)
   {
     color = left.color;
     center = (left.center + right.center) / 2;
@@ -121,6 +136,10 @@ struct Armor
     auto left_rectangular_error = std::abs(left.angle - roll - CV_PI / 2);
     auto right_rectangular_error = std::abs(right.angle - roll - CV_PI / 2);
     rectangular_error = std::max(left_rectangular_error, right_rectangular_error);
+
+    type = ArmorType::SMALL;
+    name = ArmorName::not_armor;
+    confidence = 0.0;
   };
 };
 

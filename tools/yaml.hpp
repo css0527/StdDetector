@@ -2,6 +2,7 @@
 #define TOOLS__YAML_HPP
 
 #include <yaml-cpp/yaml.h>
+
 #include <optional>
 
 #include "logger.hpp"
@@ -27,6 +28,13 @@ inline T read(const YAML::Node & yaml, const std::string & key)
   if (yaml[key]) return yaml[key].as<T>();
   logger()->error("[YAML] {} not found!", key);
   throw std::runtime_error("[YAML] " + key + " not found!");
+}
+
+template <typename T>
+inline T read(const YAML::Node & yaml, const std::string & key, const T & default_value)
+{
+  if (yaml[key]) return yaml[key].as<T>();
+  return default_value;
 }
 
 template <typename T>

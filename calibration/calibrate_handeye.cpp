@@ -11,7 +11,7 @@
 
 const std::string keys =
   "{help h usage ? |                          | 输出命令行参数说明}"
-  "{config-path c  | /home/c/CSS_test/configs/calibration.yaml | yaml配置文件路径 }"
+  "{config-path c  | /home/scurm/StdDetector/config/calibration.yaml | yaml配置文件路径 }"
   "{@input-folder  | assets/img_with_q        | 输入文件夹路径   }";
 
 std::vector<cv::Point3f> centers_3d(const cv::Size & pattern_size, const float center_distance)
@@ -119,8 +119,9 @@ void print_yaml(
   result << YAML::Value << YAML::Flow << R_gimbal2imubody_data;
   result << YAML::Newline;
   result << YAML::Newline;
-  result << YAML::Comment(fmt::format(
-    "相机同理想情况的偏角: yaw{:.2f} pitch{:.2f} roll{:.2f} degree", ypr[0], ypr[1], ypr[2]));
+  result << YAML::Comment(
+    fmt::format(
+      "相机同理想情况的偏角: yaw{:.2f} pitch{:.2f} roll{:.2f} degree", ypr[0], ypr[1], ypr[2]));
   result << YAML::Key << "R_camera2gimbal";
   result << YAML::Value << YAML::Flow << R_camera2gimbal_data;
   result << YAML::Key << "t_camera2gimbal";
