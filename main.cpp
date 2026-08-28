@@ -20,33 +20,30 @@ DetectorParams loadDetectorParams(const YAML::Node & yaml)
 {
   DetectorParams params;
 
-  // 传统方法参数 - 使用带默认值的 read
-  params.binary_thres = tools::read<int>(yaml, "threshold", 120);
-  params.light_params.max_angle = tools::read<double>(yaml, "max_angle_error", 45.0);
-  params.light_params.min_ratio = 1.0 / tools::read<double>(yaml, "max_lightbar_ratio", 20.0);
-  params.light_params.max_ratio = 1.0 / tools::read<double>(yaml, "min_lightbar_ratio", 1.5);
+  // 放宽参数，更容易检测到
+  params.binary_thres = tools::read<int>(yaml, "threshold", 100);                      // 降低阈值
+  params.light_params.max_angle = tools::read<double>(yaml, "max_angle_error", 60.0);  // 放宽角度
+  params.light_params.min_ratio = 1.0 / tools::read<double>(yaml, "max_lightbar_ratio", 30.0);
+  params.light_params.max_ratio = 1.0 / tools::read<double>(yaml, "min_lightbar_ratio", 1.0);
 
-  params.armor_params.min_light_ratio = 0.6;
-  params.armor_params.min_small_center_distance = tools::read<double>(yaml, "min_armor_ratio", 1.0);
-  params.armor_params.max_small_center_distance = tools::read<double>(yaml, "max_armor_ratio", 5.0);
-  params.armor_params.max_angle = tools::read<double>(yaml, "max_rectangular_error", 25.0);
+  params.armor_params.min_light_ratio = 0.4;  // 放宽
+  params.armor_params.min_small_center_distance = tools::read<double>(yaml, "min_armor_ratio", 0.5);
+  params.armor_params.max_small_center_distance = tools::read<double>(yaml, "max_armor_ratio", 8.0);
+  params.armor_params.max_angle = tools::read<double>(yaml, "max_rectangular_error", 40.0);
 
-  params.classifier_threshold = tools::read<double>(yaml, "min_confidence", 0.8);
+  params.classifier_threshold = tools::read<double>(yaml, "min_confidence", 0.5);  // 降低置信度阈值
 
   return params;
 }
 
 int main()
 {
-  // 初始化日志
   tools::set_logger();
   tools::logger()->info("AutoAim System Starting...");
 
-  // 加载配置
   std::string config_path = "/home/scurm/StdDetector/config/config.yaml";
   auto yaml = tools::load(config_path);
 
-  // 读取敌方颜色
   std::string enemy_color_str = tools::read<std::string>(yaml, "enemy_color", "red");
   Color enemy_color = (enemy_color_str == "red") ? Color::red : Color::blue;
   tools::logger()->info("Enemy color: {}", enemy_color_str);
@@ -65,28 +62,23 @@ int main()
     (cv::Mat_<double>(1, 5) << distort_coeffs_data[0], distort_coeffs_data[1],
      distort_coeffs_data[2], distort_coeffs_data[3], distort_coeffs_data[4]);
 
-  // 读取装甲板参数
   float armor_width = static_cast<float>(tools::read<double>(yaml, "armor_width", 0.135));
   float lightbar_length = static_cast<float>(tools::read<double>(yaml, "lightbar_length", 0.056));
 
-  // 构建3D物体点
   std::vector<cv::Point3f> object_points = {
     {-armor_width / 2, -lightbar_length / 2, 0},
     {armor_width / 2, -lightbar_length / 2, 0},
     {armor_width / 2, lightbar_length / 2, 0},
     {-armor_width / 2, lightbar_length / 2, 0}};
 
-  // 初始化检测器
   DetectorParams detector_params = loadDetectorParams(yaml);
   Detector detector(detector_params);
   detector.setEnemyColor(enemy_color);
 
-  // 读取视频/相机配置
   auto video_yaml = yaml["video"];
   bool use_camera = tools::read<bool>(video_yaml, "use_camera", false);
   std::string video_path = tools::read<std::string>(video_yaml, "video_path", "");
 
-  // 初始化视频/相机
   VideoCapture video;
   std::unique_ptr<io::Camera> camera;
 
@@ -108,11 +100,8 @@ int main()
     tools::logger()->info("Video opened: {}", video_path);
   }
 
-  // 卡尔曼滤波器
   predict::KalmanFilter kf_yaw, kf_pitch, kf_roll;
 
-  // 主循环
-  auto last_time = std::chrono::steady_clock::now();
   int frame_count = 0;
 
   while (true) {
@@ -127,23 +116,12 @@ int main()
     }
 
     if (bgr_img.empty()) {
-      tools::logger()->warn("Empty frame");
       if (!use_camera) break;
       continue;
     }
 
-    // 计算FPS
     frame_count++;
-    auto current_time = std::chrono::steady_clock::now();
-    auto dt = tools::delta_time(current_time, last_time);
-    if (dt >= 1.0) {
-      double fps = frame_count / dt;
-      tools::logger()->debug("FPS: {:.1f}", fps);
-      frame_count = 0;
-      last_time = current_time;
-    }
 
-    // 检测装甲板
     auto armors = detector.detect(bgr_img);
 
     Mat draw_img = bgr_img.clone();
@@ -151,10 +129,13 @@ int main()
     if (!armors.empty()) {
       auto target = armors.front();
 
-      // 绘制装甲板
+      // 检测到装甲板 - 使用 INFO 级别
+      tools::logger()->info(
+        "[{}] Armor detected! ID: {}, Confidence: {:.2f}", frame_count, ARMOR_NAMES[target.name],
+        target.confidence);
+
       tools::draw_points(draw_img, target.points);
 
-      // PnP求解
       std::vector<cv::Point2f> img_points = {
         target.left.top, target.right.top, target.right.bottom, target.left.bottom};
 
@@ -171,29 +152,14 @@ int main()
         double pitch = -asin(rmat.at<double>(1, 2));
         double roll = atan2(rmat.at<double>(1, 0), rmat.at<double>(1, 1));
 
-        // 卡尔曼滤波
         float filtered_yaw = kf_yaw.KalmanUpdate(yaw * 57.3f, 0.0f);
         float filtered_pitch = kf_pitch.KalmanUpdate(pitch * 57.3f, 0.0f);
         float filtered_roll = kf_roll.KalmanUpdate(roll * 57.3f, 0.0f);
 
-        tools::draw_text(
-          draw_img, fmt::format("Dist: {:.2f}m", distance), cv::Point(10, 30),
-          cv::Scalar(0, 255, 255), 0.7, 2);
+        tools::logger()->info(
+          "  -> yaw={:.2f} deg, pitch={:.2f} deg, roll={:.2f} deg, dist={:.2f}m", yaw * 57.3,
+          pitch * 57.3, roll * 57.3, distance);
 
-        tools::draw_text(
-          draw_img,
-          fmt::format(
-            "Angles: Yaw {:.2f} Pitch {:.2f} Roll {:.2f}", yaw * 57.3, pitch * 57.3, roll * 57.3),
-          cv::Point(10, 60), cv::Scalar(0, 255, 255), 0.7, 2);
-
-        tools::draw_text(
-          draw_img,
-          fmt::format(
-            "Filtered: Yaw {:.2f} Pitch {:.2f} Roll {:.2f}", filtered_yaw, filtered_pitch,
-            filtered_roll),
-          cv::Point(10, 90), cv::Scalar(255, 0, 0), 0.7, 2);
-
-        // 绘制预测方向
         float predicted_yaw = kf_yaw.getPreAngle();
         float yaw_change = predicted_yaw - filtered_yaw;
         float pixel_scale = 20.0f;
@@ -210,9 +176,14 @@ int main()
       for (const auto & armor : armors) {
         std::string name = ARMOR_NAMES[armor.name];
         std::string color_str = COLORS[armor.color];
-        tools::draw_text(
+        cv::putText(
           draw_img, fmt::format("{}{}{:.2f}", color_str, name, armor.confidence), armor.left.top,
-          cv::Scalar(0, 255, 0), 0.5, 1);
+          cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(0, 255, 0), 1);
+      }
+    } else {
+      // 检测不到装甲板 - 使用 WARNING 级别
+      if (frame_count % 30 == 0) {  // 每30帧警告一次
+        tools::logger()->warn("[{}] No armor detected", frame_count);
       }
     }
 

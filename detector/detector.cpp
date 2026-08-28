@@ -3,7 +3,6 @@
 #include <fmt/format.h>
 
 #include <algorithm>
-#include <execution>
 
 #include "tools/img_tools.hpp"
 #include "tools/logger.hpp"
@@ -13,7 +12,6 @@ namespace auto_aim
 
 Detector::Detector(const DetectorParams & params) : params_(params)
 {
-  // 初始化分类器
   try {
     std::string model_path = "/home/scurm/StdDetector/model/lenet.onnx";
     std::string label_path = "/home/scurm/StdDetector/model/label.txt";
@@ -25,7 +23,6 @@ Detector::Detector(const DetectorParams & params) : params_(params)
     tools::logger()->error("Failed to init classifier: {}", e.what());
   }
 
-  // 初始化角点矫正器
   if (params_.use_pca) {
     corner_corrector_ = std::make_unique<LightCornerCorrector>();
   }
@@ -33,29 +30,36 @@ Detector::Detector(const DetectorParams & params) : params_(params)
 
 std::list<Armor> Detector::detect(const cv::Mat & bgr_img)
 {
-  // 1. 预处理
   binary_img_ = preprocessImage(bgr_img);
-
-  // 2. 检测灯条
   lights_ = findLights(bgr_img, binary_img_);
 
-  // 3. 匹配装甲板
+  // 调试灯条数量
+  if (lights_.empty()) {
+    tools::logger()->debug("No lights found");
+    return std::list<Armor>();
+  }
+
   armors_ = matchLights(lights_);
 
-  // 4. 分类识别数字
+  // 调试装甲板数量
+  if (armors_.empty()) {
+    tools::logger()->debug("Found {} lights but no armors matched", lights_.size());
+    return std::list<Armor>();
+  }
+
+  // 分类处理
   if (!armors_.empty() && classifier_) {
     for (auto & armor : armors_) {
       armor.number_img = classifier_->extractNumber(bgr_img, armor);
       classifier_->classify(armor);
     }
 
-    // 将 vector 转为 list 进行过滤
     std::list<Armor> armor_list(armors_.begin(), armors_.end());
     classifier_->eraseIgnoreClasses(armor_list);
     armors_.assign(armor_list.begin(), armor_list.end());
   }
 
-  // 5. PCA 角点矫正
+  // PCA 角点矫正
   if (params_.use_pca && corner_corrector_ && !armors_.empty()) {
     for (auto & armor : armors_) {
       auto left_top = armor.left.top;

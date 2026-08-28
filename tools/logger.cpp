@@ -16,13 +16,13 @@ void set_logger()
 {
   auto file_name = fmt::format("logs/{:%Y-%m-%d_%H-%M-%S}.log", std::chrono::system_clock::now());
   auto file_sink = std::make_shared<spdlog::sinks::basic_file_sink_mt>(file_name, true);
-  file_sink->set_level(spdlog::level::debug);
+  file_sink->set_level(spdlog::level::info);  // 改为 info，减少调试信息
 
   auto console_sink = std::make_shared<spdlog::sinks::stdout_color_sink_mt>();
-  console_sink->set_level(spdlog::level::debug);
+  console_sink->set_level(spdlog::level::info);  // 改为 info
 
   logger_ = std::make_shared<spdlog::logger>("", spdlog::sinks_init_list{file_sink, console_sink});
-  logger_->set_level(spdlog::level::debug);
+  logger_->set_level(spdlog::level::info);  // 改为 info
   logger_->flush_on(spdlog::level::info);
 }
 
